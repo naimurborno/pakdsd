@@ -37,6 +37,9 @@ from PIL import Image
 from torchvision import transforms, utils
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
+from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
+
+
 
 import diffusers
 from diffusers import (
@@ -48,10 +51,10 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
-from dataloader.webdatasets import WebImageDataset, Text2ImageDataset
-from dataloader.localdatasets import LocalImageDataset
-from pipelines.pipeline_pasd import StableDiffusionControlNetPipeline
-from myutils.img_util import colorful_loss
+# from dataloader.webdatasets import WebImageDataset, Text2ImageDataset
+# from dataloader.localdatasets import LocalImageDataset
+# from pipelines.pipeline_pasd import StableDiffusionControlNetPipeline
+# from myutils.img_util import colorful_loss
 
 if is_wandb_available():
     import wandb
@@ -570,10 +573,15 @@ def main(args):
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
-        log_with=args.report_to,
-        #project_dir=logging_dir,
-        project_config=accelerator_project_config,
+        # log_with=args.report_to,
+        # #project_dir=logging_dir,
+        # project_config=accelerator_project_config,
     )
+    #i have comment this section out. these codes are form dreambooth
+    # accelerator = Accelerator(
+    #     gradient_accumulation_steps=args.gradient_accumulation_steps,
+    #     mixed_precision=args.mixed_precision,
+    # )
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -615,16 +623,19 @@ def main(args):
         )
 
     # import correct text encoder class
-    text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
-
-    # Load scheduler and models
-    noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-    text_encoder = text_encoder_cls.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
+    text_encoder = CLIPTextModel.from_pretrained(
+    pretrained_model_name_or_path, subfolder="text_encoder"
     )
-    vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision)
-    unet = UNet2DConditionModel.from_pretrained_orig(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
+    vae = AutoencoderKL.from_pretrained(
+    pretrained_model_name_or_path, subfolder="vae"
+    )
+    #This is the student model
+    unet = UNet2DConditionModel.from_pretrained(
+    pretrained_model_name_or_path, subfolder="unet"
+    )
+    tokenizer = CLIPTokenizer.from_pretrained(
+    pretrained_model_name_or_path,
+    subfolder="tokenizer",
     )
 
     if args.controlnet_model_name_or_path:
@@ -753,9 +764,9 @@ def main(args):
         eps=args.adam_epsilon,
     )
     
-    if False:
-        train_dataset = WebImageDataset(image_size=args.resolution, tokenizer=tokenizer, accelerator=accelerator, control_type=args.control_type, null_text_ratio=0.5, resize_bak=True)
-        #train_dataset = LocalImageDataset(image_size=args.resolution, tokenizer=tokenizer, accelerator=accelerator, control_type=args.control_type, null_text_ratio=0.5, resize_bak=True)
+    if True:
+        #train_dataset = WebImageDataset(image_size=args.resolution, tokenizer=tokenizer, accelerator=accelerator, control_type=args.control_type, null_text_ratio=0.5, resize_bak=True)
+        train_dataset = LocalImageDataset(image_size=args.resolution, tokenizer=tokenizer, accelerator=accelerator, control_type=args.control_type, null_text_ratio=0.5, resize_bak=True)
 
         #train_dataloader = wds.WebLoader(
         train_dataloader = torch.utils.data.DataLoader(
