@@ -9,10 +9,11 @@ from functools import partial
 from torch import nn
 from torchvision import transforms
 from torch.utils import data as data
+from pathlib import Path
 
-from .realesrgan import RealESRGAN_degradation
-from myutils.img_util import convert_image_to_fn
-from myutils.misc import exists
+# from .realesrgan import RealESRGAN_degradation
+# from myutils.img_util import convert_image_to_fn
+# from myutils.misc import exists
 
 class LocalImageDataset(data.Dataset):
     def __init__(self, 
@@ -27,73 +28,57 @@ class LocalImageDataset(data.Dataset):
                 resize_bak=True,
                 convert_image_to="RGB",
         ):
-        super(LocalImageDataset, self).__init__()
+        self.size = image_size
+        self.center_crop = center_crop
         self.tokenizer = tokenizer
-        self.control_type = control_type
-        self.resize_bak = resize_bak
-        self.null_text_ratio = null_text_ratio
 
-        self.degradation = RealESRGAN_degradation('params_realesrgan.yml', device='cpu')
+        # Define the root directory and sub-directory paths
+        self.root_dir = Path('/content/oxford-102-flower-dataset/102 flower/flowers/train')
+        if not self.root_dir.exists():
+            raise ValueError("Root directory doesn't exist.")
 
-        maybe_convert_fn = partial(convert_image_to_fn, convert_image_to) if exists(convert_image_to) else nn.Identity()
-        self.crop_preproc = transforms.Compose([
-            transforms.Lambda(maybe_convert_fn),
-            #transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(image_size) if center_crop else transforms.RandomCrop(image_size),
-            transforms.RandomHorizontalFlip() if random_flip else transforms.Lambda(lambda x: x),
-        ])
-        self.img_preproc = transforms.Compose([
-            #transforms.Lambda(maybe_convert_fn),
-            #transforms.Resize(image_size),
-            #transforms.CenterCrop(image_size),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
+        self.image_paths = []
+        self.prompts = []
 
-        self.img_paths = []
-        folders = os.listdir(pngtxt_dir)
-        for folder in folders:
-            self.img_paths.extend(sorted(glob.glob(f'{pngtxt_dir}/{folder}/*.png'))[:])
+        # Iterate through each class folder to collect image paths and corresponding prompts
+        for class_folder in self.root_dir.iterdir():
+            if class_folder.is_dir():
+                class_name = class_folder.name
+                for image_file in class_folder.glob('*.jpg'):  # Adjust the extension as necessary
+                    self.image_paths.append(image_file)
+                    self.prompts.append(f"a photo of a {'<'+{flowers[class_name]}+'>'}")
 
-    def tokenize_caption(self, caption):
-        if random.random() < self.null_text_ratio:
-            caption = ""
-            
-        inputs = self.tokenizer(
-            caption, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
+        self.num_images = len(self.image_paths)
+
+        self.image_transforms = transforms.Compose(
+            [
+                transforms.Resize(self.size, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(self.size) if center_crop else transforms.RandomCrop(size),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
         )
 
-        return inputs.input_ids
+    def __len__(self):
+        return self.num_images
 
     def __getitem__(self, index):
-        example = dict()
+        example = {}
 
-        # load image
-        img_path = self.img_paths[index]
-        txt_path = img_path.replace(".png", ".txt")
-        image = Image.open(img_path).convert('RGB')
+        # Load image
+        image_path = self.image_paths[index]
+        image = Image.open(image_path)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
 
-        image = self.crop_preproc(image)
-            
-        example["pixel_values"] = self.img_preproc(image)
-        if self.control_type is not None:
-            if self.control_type == 'realisr':
-                GT_image_t, LR_image_t = self.degradation.degrade_process(np.asarray(image)/255., resize_bak=self.resize_bak)
-                example["conditioning_pixel_values"] = LR_image_t.squeeze(0)
-                example["pixel_values"] = GT_image_t.squeeze(0) * 2.0 - 1.0
-            elif self.control_type == 'grayscale':
-                image = np.asarray(image.convert('L').convert('RGB'))/255.
-                example["conditioning_pixel_values"] = torch.from_numpy(image).permute(2,0,1)
-            else:
-                raise NotImplementedError
+        prompt = self.prompts[index]
 
-        fp = open(txt_path, "r")
-        caption = fp.readlines()[0]
-        if self.tokenizer is not None:
-            example["input_ids"] = self.tokenize_caption(caption).squeeze(0)
-        fp.close()
+        example['instance_images'] = self.image_transforms(image)
+        example['instance_prompt_ids'] = self.tokenizer(
+            prompt,
+            padding='do_not_pad',
+            truncation=True,
+            max_length=self.tokenizer.model_max_length
+        ).input_ids
 
         return example
-
-    def __len__(self):
-        return len(self.img_paths)
